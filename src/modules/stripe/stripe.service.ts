@@ -21,8 +21,9 @@ export class StripeService {
     userId: string;
     stripe_id: string;
     email: string;
+    name: string;
 
-  }): Promise<Stripe.Checkout.Session> {
+  }): Promise<{ session: Stripe.Checkout.Session, stripeCustomerId: string }> {
     try {
       let customerId = params.stripe_id;
       if (!customerId) {
@@ -36,7 +37,7 @@ export class StripeService {
             country: "US"
           },
           business_name: "Consultinggroup",
-          name: "Max",
+          name: params.name,
           metadata: {
             user_id: params.userId,
             country: "US",
@@ -45,7 +46,6 @@ export class StripeService {
         });
         customerId = customer.id;
       }
-      console.log("Customer ID:", customerId);
 
       const session = await this.stripe.checkout.sessions.create({
         customer: customerId,
@@ -61,7 +61,10 @@ export class StripeService {
         expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
       });
       console.log("datos recivisos de la sesion create", session)
-      return session;
+      return {
+        session,
+        stripeCustomerId: customerId
+      };
 
     } catch (error) {
       throw new InternalServerErrorException(

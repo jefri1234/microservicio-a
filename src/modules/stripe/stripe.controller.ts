@@ -29,23 +29,24 @@ export class StripeController {
           userId: createPaymentDto.userId,
           stripe_id: user.stripe_customer_id,
           email: user.email,
+          name: user.name
         }
       );
 
-      // if (!user.stripe_customer_id) {
-      //   await this.userRepository.update(
-      //     {
-      //       stripe_customer_id: result.stripeCustomerId
-      //     },
-      //     {
-      //       where: {
-      //         user_id: user.user_id
-      //       }
-      //     }
-      //   );
-      // }
+      if (!user.stripe_customer_id) {
+        await this.userRepository.update(
+          {
+            stripe_customer_id: result.stripeCustomerId
+          },
+          {
+            where: {
+              user_id: user.user_id
+            }
+          }
+        );
+      }
 
-      return { checkoutUrl: result};
+      return { checkoutUrl: result };
 
     } catch (error) {
       console.error('Error al crear la sesión de checkout:', error);
