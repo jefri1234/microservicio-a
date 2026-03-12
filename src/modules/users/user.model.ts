@@ -74,8 +74,13 @@ export class User extends Model<User> {
 
 
     @Column({
-        type: DataType.TEXT, 
+        type: DataType.TEXT,
         allowNull: true,
     })
     stripe_customer_id: string;
+
+    @Column({
+        type: DataType.BOOLEAN,
+    })
+    has_active_subscription: boolean;
 }

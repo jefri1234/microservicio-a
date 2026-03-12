@@ -13,5 +13,6 @@ import { SequelizeModule } from "@nestjs/sequelize";
   ],
   controllers: [UsersController],
   providers: [UsersService],
+  exports: [UsersService]
 })
 export class UsersModule { }

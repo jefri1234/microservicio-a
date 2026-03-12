@@ -2,12 +2,29 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { MODE_PAYMENT, PAYMENT_METHODS, VERSION_STRIPE } from "src/common/constants/stripe.constants"
+import { Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/sequelize';
+import { Payment } from '../payments/payments.model';
+import { Subscription } from "src/modules/subcription/subcription.model";
+import { User } from '../users/user.model';
+
 
 @Injectable()
 export class StripeService {
+
+  private logger: Logger = new Logger(StripeService.name);
   private stripe: Stripe;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    @InjectModel(Payment)
+    private paymentRepository: typeof Payment,
+    @InjectModel(Subscription)
+    private subscriptionRepository: typeof Subscription,
+    @InjectModel(User)
+    private userRepository: typeof User,
+
+  ) {
     this.stripe = new Stripe(
       this.configService.get<string>('STRIPE_SECRET_KEY'),
       {
@@ -60,7 +77,7 @@ export class StripeService {
         },
         expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
       });
-      console.log("datos recivisos de la sesion create", session)
+ 
       return {
         session,
         stripeCustomerId: customerId
@@ -73,9 +90,6 @@ export class StripeService {
     }
   }
 
-  // ──────────────────────────────────────────────────────────
-  // VERIFICAR WEBHOOK (MUY IMPORTANTE)
-  // ──────────────────────────────────────────────────────────
   constructEvent(payload: Buffer, signature: string): Stripe.Event {
     const webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET');
 
@@ -110,4 +124,108 @@ export class StripeService {
       reason: params.reason || 'requested_by_customer',
     });
   }
+
+
+  async handleStripeEvent(event: Stripe.Event): Promise<void> {
+
+    // ── IDEMPOTENCIA ─────────────────────────────────────────
+    // Verifica si ya procesaste este evento exacto
+    // Stripe puede enviarte el mismo evento más de una vez
+    const alreadyProcessed = await this.paymentRepository.findOne({
+      where: { stripe_event_id: event.id }
+    });
+    if (alreadyProcessed) {
+      this.logger.warn(`Event ${event.id} already processed. Skipping.`);
+      return;
+    }
+
+    switch (event.type) {
+
+      case 'checkout.session.completed': {
+        const session = event.data.object as Stripe.Checkout.Session;
+        // El usuario pagó por primera vez — crear suscripción en tu DB
+        await this.onCheckoutCompleted(session, event.id);
+        break;
+      }
+
+      // case 'invoice.payment_succeeded': {
+      //   const invoice = event.data.object as Stripe.Invoice;
+      //   // Renovación mensual exitosa — registrar el cobro
+      //   await this.onInvoicePaid(invoice, event.id);
+      //   break;
+      // }
+
+      // case 'invoice.payment_failed': {
+      //   const invoice = event.data.object as Stripe.Invoice;
+      //   // Renovación falló — avisar al usuario, marcar past_due
+      //   await this.onInvoiceFailed(invoice, event.id);
+      //   break;
+      // }
+
+      // case 'customer.subscription.updated': {
+      //   const sub = event.data.object as Stripe.Subscription;
+      //   // Cambió algo: renovó, cambió de plan, se reactivó
+      //   await this.onSubscriptionUpdated(sub, event.id);
+      //   break;
+      // }
+
+      // case 'customer.subscription.deleted': {
+      //   const sub = event.data.object as Stripe.Subscription;
+      //   // Canceló o Stripe la terminó por falta de pago
+      //   await this.onSubscriptionDeleted(sub, event.id);
+      //   break;
+      // }
+
+      default:
+        this.logger.log(`Ignored event: ${event.type}`);
+    }
+  }
+
+  private async onCheckoutCompleted(session: Stripe.Checkout.Session, eventId: string) {
+    const userId = session.metadata?.userId;
+    if (!userId) {
+      this.logger.error(`No userId in metadata. Session: ${session.id}`);
+      return;
+    }
+
+    // 1. Obtener detalles completos de la suscripción en Stripe
+    const subscription = await this.stripe.subscriptions.retrieve(
+      session.subscription as string
+    );
+
+    // 2. Registrar el pago en tabla payments
+    await this.paymentRepository.create({
+      user_id: userId,
+      stripe_session_id: session.id,
+      stripe_payment_intent_id: session.payment_intent as string,
+      stripe_subscription_id: subscription.id,
+      amount: session.amount_total,
+      currency: session.currency,
+      status: 'completed',
+      stripe_event_id: eventId,   // ← clave para idempotencia futura
+      paid_at: new Date(),
+    });
+
+    // 3. Crear o actualizar la suscripción en tu tabla subscriptions
+    await this.subscriptionRepository.upsert({
+      user_id: userId,
+      stripe_subscription_id: subscription.id,
+      stripe_price_id: subscription.items.data[0].price.id,
+      status: subscription.status,                                    // 'active'
+      current_period_start: new Date(),
+      current_period_end: new Date(),
+    });
+
+    // 4. Marcar al usuario como suscrito en tabla users
+    await this.userRepository.update(
+      { has_active_subscription: true },
+      { where: { user_id: userId } }
+    );
+
+    this.logger.log(`✅ Subscription activated for user ${userId}`);
+  }
+
+
+
+
 }

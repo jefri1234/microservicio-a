@@ -6,6 +6,8 @@ import { UsersModule } from './modules/users/users.module';
 import { StripeModule } from './modules/stripe/stripe.module';
 import { SequelizeModule } from "@nestjs/sequelize";
 import { ConfigModule } from '@nestjs/config';
+import { PaymentsModule } from './modules/payments/payments.module';
+import { SubcriptionModule } from './modules/subcription/subcription.module';
 
 @Module({
   imports: [
@@ -30,7 +32,9 @@ import { ConfigModule } from '@nestjs/config';
     //MODULES
     OrdersModule,
     UsersModule,
-    StripeModule],
+    StripeModule,
+    PaymentsModule,
+    SubcriptionModule],
   controllers: [AppController],
   providers: [AppService],
 })

@@ -1,25 +1,21 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Headers, Req, HttpCode, RawBodyRequest } from '@nestjs/common';
 import { StripeService } from './stripe.service';
 import { BadRequestException } from "@nestjs/common/exceptions";
 import { CreatePaymentDto } from "./dto/create-stripe.dto";
-import { User } from '../users/user.model';
-import { InjectModel } from '@nestjs/sequelize';
+import { UsersService } from '../users/users.service';
+import Stripe from 'stripe';
 
 
 @Controller('stripe')
 export class StripeController {
   constructor(
     private readonly stripeService: StripeService,
-    @InjectModel(User) private userRepository: typeof User,
+    private readonly userService: UsersService
   ) { }
 
   @Post('subscribe')
   async subscribe(@Body() createPaymentDto: CreatePaymentDto) {
-    const user = await this.userRepository.findByPk(createPaymentDto.userId);
-
-    if (!createPaymentDto.priceId) {
-      throw new BadRequestException('priceId es requerido');
-    }
+    const user = await this.userService.getUserId(createPaymentDto.userId);
 
     try {
 
@@ -34,16 +30,7 @@ export class StripeController {
       );
 
       if (!user.stripe_customer_id) {
-        await this.userRepository.update(
-          {
-            stripe_customer_id: result.stripeCustomerId
-          },
-          {
-            where: {
-              user_id: user.user_id
-            }
-          }
-        );
+        await this.userService.updateUser(createPaymentDto.userId, result.stripeCustomerId);
       }
 
       return { checkoutUrl: result };
@@ -52,6 +39,27 @@ export class StripeController {
       console.error('Error al crear la sesión de checkout:', error);
       throw new BadRequestException(`Error al procesar el pago: ${error}`);
     }
+  }
+
+  @Post('webhook')
+  @HttpCode(200)
+  async handleWebhook(
+    @Headers('stripe-signature') signature: string,
+    @Req() req: RawBodyRequest<Request>,
+  ) {
+    if (!signature) throw new BadRequestException('Missing stripe-signature');
+
+    let event: Stripe.Event;
+    try {
+      event = this.stripeService.constructEvent(req.rawBody, signature);
+    } catch (err) {
+      // Firma inválida → alguien está llamando a tu endpoint sin ser Stripe
+      throw new BadRequestException(`Webhook signature invalid: ${err.message}`);
+    }
+
+    // Delegar el manejo del evento al servicio de pagos
+    await this.stripeService.handleStripeEvent(event);
+    return { received: true };
   }
 
 }

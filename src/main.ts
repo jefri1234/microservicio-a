@@ -5,7 +5,9 @@ import { TransformResponseInterceptor } from "src/common/interceptors/transform-
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    rawBody: true, // Habilita el acceso al cuerpo sin procesar para el webhook de Stripe
+  });
 
 
   app.useGlobalFilters(new HttpExceptionFilter());
