@@ -13,3 +13,9 @@ export const MODE_PAYMENT = {
 }
 
 export const VERSION_STRIPE = "2025-10-29.clover" as Stripe.StripeConfig['apiVersion'];
+
+export const TYPE_EVENTS_STRIPE = {
+    CHECKOUT_SESSION_COMPLETED: 'checkout.session.completed' as Stripe.Event.Type,
+    CUSTOMER_SUBSCRIPTION_CREATED: 'customer.subscription.created' as Stripe.Event.Type,
+    CUSTOMER_SUBSCRIPTION_UPDATED: 'customer.subscription.updated' as Stripe.Event.Type
+} as const;

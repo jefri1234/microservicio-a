@@ -1,13 +1,14 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
-import { MODE_PAYMENT, PAYMENT_METHODS, VERSION_STRIPE } from "src/common/constants/stripe.constants"
+import { MODE_PAYMENT, PAYMENT_METHODS, VERSION_STRIPE, TYPE_EVENTS_STRIPE } from "src/common/constants/stripe.constants"
 import { Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Payment } from '../payments/payments.model';
 import { Subscription } from "src/modules/subcription/subcription.model";
 import { User } from '../users/user.model';
-
+import { StripeEvent } from './stripe_events.model';
+import { Sequelize } from 'sequelize-typescript';
 
 @Injectable()
 export class StripeService {
@@ -23,6 +24,10 @@ export class StripeService {
     private subscriptionRepository: typeof Subscription,
     @InjectModel(User)
     private userRepository: typeof User,
+    @InjectModel(StripeEvent)
+    private stripeEventRepository: typeof StripeEvent,
+    private readonly sequelize: Sequelize,
+
 
   ) {
     this.stripe = new Stripe(
@@ -77,7 +82,7 @@ export class StripeService {
         },
         expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
       });
- 
+
       return {
         session,
         stripeCustomerId: customerId
@@ -128,11 +133,8 @@ export class StripeService {
 
   async handleStripeEvent(event: Stripe.Event): Promise<void> {
 
-    // ── IDEMPOTENCIA ─────────────────────────────────────────
-    // Verifica si ya procesaste este evento exacto
-    // Stripe puede enviarte el mismo evento más de una vez
-    const alreadyProcessed = await this.paymentRepository.findOne({
-      where: { stripe_event_id: event.id }
+    const alreadyProcessed = await this.stripeEventRepository.findOne({
+      where: { event_id: event.id }
     });
     if (alreadyProcessed) {
       this.logger.warn(`Event ${event.id} already processed. Skipping.`);
@@ -141,10 +143,9 @@ export class StripeService {
 
     switch (event.type) {
 
-      case 'checkout.session.completed': {
+      case TYPE_EVENTS_STRIPE.CHECKOUT_SESSION_COMPLETED: {
         const session = event.data.object as Stripe.Checkout.Session;
-        // El usuario pagó por primera vez — crear suscripción en tu DB
-        await this.onCheckoutCompleted(session, event.id);
+        await this.onCheckoutCompleted(session, event);
         break;
       }
 
@@ -181,7 +182,7 @@ export class StripeService {
     }
   }
 
-  private async onCheckoutCompleted(session: Stripe.Checkout.Session, eventId: string) {
+  private async onCheckoutCompleted(session: Stripe.Checkout.Session, event: Stripe.Event): Promise<void> {
     const userId = session.metadata?.userId;
     if (!userId) {
       this.logger.error(`No userId in metadata. Session: ${session.id}`);
@@ -193,39 +194,44 @@ export class StripeService {
       session.subscription as string
     );
 
-    // 2. Registrar el pago en tabla payments
-    await this.paymentRepository.create({
-      user_id: userId,
-      stripe_session_id: session.id,
-      stripe_payment_intent_id: session.payment_intent as string,
-      stripe_subscription_id: subscription.id,
-      amount: session.amount_total,
-      currency: session.currency,
-      status: 'completed',
-      stripe_event_id: eventId,   // ← clave para idempotencia futura
-      paid_at: new Date(),
+    await this.sequelize.transaction(async (t) => {
+      await this.paymentRepository.create({
+        user_id: userId,
+        stripe_session_id: session.id,
+        stripe_payment_intent_id: session.payment_intent as string,
+        stripe_subscription_id: subscription.id,
+        amount: session.amount_total,
+        currency: session.currency,
+        status: 'completed',
+        stripe_event_id: event.id,
+        paid_at: new Date(),
+      }, { transaction: t });
+
+      await this.subscriptionRepository.upsert({
+        user_id: userId,
+        stripe_subscription_id: subscription.id,
+        stripe_price_id: subscription.items.data[0].price.id,
+        status: subscription.status,
+        current_period_start: new Date(),
+        current_period_end: new Date(),
+      }, { transaction: t });
+
+      await this.userRepository.update(
+        { has_active_subscription: true },
+        {
+          where: { user_id: userId },
+          transaction: t
+        }
+      );
+
+      await this.stripeEventRepository.create({
+        event_id: event.id,
+        event_type: event.type,
+        processed_at: new Date(),
+      }, { transaction: t });
     });
 
-    // 3. Crear o actualizar la suscripción en tu tabla subscriptions
-    await this.subscriptionRepository.upsert({
-      user_id: userId,
-      stripe_subscription_id: subscription.id,
-      stripe_price_id: subscription.items.data[0].price.id,
-      status: subscription.status,                                    // 'active'
-      current_period_start: new Date(),
-      current_period_end: new Date(),
-    });
-
-    // 4. Marcar al usuario como suscrito en tabla users
-    await this.userRepository.update(
-      { has_active_subscription: true },
-      { where: { user_id: userId } }
-    );
-
-    this.logger.log(`✅ Subscription activated for user ${userId}`);
+    this.logger.log(`Subscription activated for user ${userId}`);
   }
-
-
-
 
 }
