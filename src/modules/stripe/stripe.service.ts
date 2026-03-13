@@ -95,12 +95,12 @@ export class StripeService {
     }
   }
 
-  constructEvent(payload: Buffer, signature: string): Stripe.Event {
+  async constructEvent(payload: Buffer, signature: string): Promise<Stripe.Event> {
     const webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET');
 
     try {
       // Stripe verifica que el payload no fue alterado en tránsito
-      return this.stripe.webhooks.constructEvent(payload, signature, webhookSecret);
+      return await this.stripe.webhooks.constructEvent(payload, signature, webhookSecret);
     } catch (error) {
       throw new Error(`Webhook signature verification failed: ${error.message}`);
     }
@@ -190,46 +190,55 @@ export class StripeService {
     }
 
     // 1. Obtener detalles completos de la suscripción en Stripe
-    const subscription = await this.stripe.subscriptions.retrieve(
+    const subscription: Stripe.Subscription = await this.stripe.subscriptions.retrieve(
       session.subscription as string
     );
 
-    await this.sequelize.transaction(async (t) => {
-      await this.paymentRepository.create({
-        user_id: userId,
-        stripe_session_id: session.id,
-        stripe_payment_intent_id: session.payment_intent as string,
-        stripe_subscription_id: subscription.id,
-        amount: session.amount_total,
-        currency: session.currency,
-        status: 'completed',
-        stripe_event_id: event.id,
-        paid_at: new Date(),
-      }, { transaction: t });
+    try {
+      await this.sequelize.transaction(async (t) => {
 
-      await this.subscriptionRepository.upsert({
-        user_id: userId,
-        stripe_subscription_id: subscription.id,
-        stripe_price_id: subscription.items.data[0].price.id,
-        status: subscription.status,
-        current_period_start: new Date(),
-        current_period_end: new Date(),
-      }, { transaction: t });
+        await this.stripeEventRepository.create({
+          event_id: event.id,
+          event_type: event.type,
+          processed_at: new Date(),
+        }, { transaction: t });
 
-      await this.userRepository.update(
-        { has_active_subscription: true },
-        {
-          where: { user_id: userId },
-          transaction: t
-        }
-      );
 
-      await this.stripeEventRepository.create({
-        event_id: event.id,
-        event_type: event.type,
-        processed_at: new Date(),
-      }, { transaction: t });
-    });
+        await this.paymentRepository.create({
+          user_id: userId,
+          stripe_session_id: session.id,
+          stripe_payment_intent_id: session.payment_intent as string,
+          stripe_subscription_id: subscription.id,
+          amount: session.amount_total,
+          currency: session.currency,
+          status: 'completed',
+          stripe_event_id: event.id,
+          paid_at: new Date(),
+        }, { transaction: t });
+
+        await this.subscriptionRepository.upsert({
+          user_id: userId,
+          stripe_subscription_id: subscription.id,
+          stripe_price_id: subscription.items.data[0].price.id,
+          status: subscription.status,
+          current_period_start: new Date(subscription.items.data[0].current_period_end * 1000),
+          current_period_end: new Date(subscription.items.data[0].current_period_end * 1000),
+        }, { transaction: t });
+
+        await this.userRepository.update(
+          { has_active_subscription: true },
+          {
+            where: { user_id: userId },
+            transaction: t
+          }
+        );
+
+      });
+    }
+    catch (error) {
+      this.logger.error(`Error processing checkout session ${session.id}: ${error.message}`);
+      throw error;
+    }
 
     this.logger.log(`Subscription activated for user ${userId}`);
   }

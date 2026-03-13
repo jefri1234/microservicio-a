@@ -33,7 +33,7 @@ export class StripeController {
         await this.userService.updateUser(createPaymentDto.userId, result.stripeCustomerId);
       }
 
-      return { checkoutUrl: result };
+      return { checkoutUrl: result.session.url };
 
     } catch (error) {
       console.error('Error al crear la sesión de checkout:', error);
@@ -51,13 +51,11 @@ export class StripeController {
 
     let event: Stripe.Event;
     try {
-      event = this.stripeService.constructEvent(req.rawBody, signature);
+      event = await this.stripeService.constructEvent(req.rawBody, signature);
     } catch (err) {
-      // Firma inválida → alguien está llamando a tu endpoint sin ser Stripe
       throw new BadRequestException(`Webhook signature invalid: ${err.message}`);
     }
 
-    // Delegar el manejo del evento al servicio de pagos
     await this.stripeService.handleStripeEvent(event);
     return { received: true };
   }
