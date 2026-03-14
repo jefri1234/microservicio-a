@@ -80,8 +80,12 @@ export class StripeService {
           userId: params.userId,
           // Puedes agregar lo que necesites: planId, orderId, etc.
         },
-        expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
-      });
+
+      },
+        {
+          idempotencyKey: `checkout_${params.userId}_${params.priceId}_${Date.now()}`
+        }
+      );
 
       return {
         session,
